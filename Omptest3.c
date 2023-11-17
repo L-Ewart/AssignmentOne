@@ -64,33 +64,58 @@ int *parallelCheapestInsertion(double **distanceMatrix, int numOfCoords) {
         int minCost = INT_MAX;
         int minCostIndex = -1, insertPosition = -1;
 
-        #pragma omp parallel for reduction(min:minCost)
+        // Parallel section for finding the nearest neighbor
+        #pragma omp parallel for
         for (int i = 0; i < numOfCoords; i++) {
             if (!visited[i]) {
+                // Each thread has its own local variables
+                int localMinCost = INT_MAX;
+                int localMinCostIndex = -1;
+                int localInsertPosition = -1;
+
+                // Find the nearest neighbor within this thread
                 for (int j = 0; j < tourSize - 1; j++) {
                     int cost = distanceMatrix[tour[j]][i] + distanceMatrix[i][tour[j + 1]] - distanceMatrix[tour[j]][tour[j + 1]];
-                    if (cost < minCost) {
-                        #pragma omp critical
-                        {
-                            if (cost < minCost) {
-                                minCost = cost;
-                                minCostIndex = i;
-                                insertPosition = j + 1;
-                            }
-                        }
+                    if (cost < localMinCost) {
+                        localMinCost = cost;
+                        localMinCostIndex = i;
+                        localInsertPosition = j + 1;
+                    }
+                }
+
+                // Update the global minimum using a critical section
+                #pragma omp critical
+                {
+                    if (localMinCost < minCost) {
+                        minCost = localMinCost;
+                        minCostIndex = localMinCostIndex;
+                        insertPosition = localInsertPosition;
                     }
                 }
             }
         }
 
-        // Insert the node
+        // Parallel section for inserting the node
         #pragma omp parallel for
         for (int i = tourSize; i > insertPosition; i--) {
             tour[i] = tour[i - 1];
         }
-        tour[insertPosition] = minCostIndex;
-        visited[minCostIndex] = true;
-        tourSize++;
+
+        // Check for duplicates before inserting
+        bool duplicate = false;
+        for (int i = 0; i < tourSize; i++) {
+            if (tour[i] == minCostIndex) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        // Insert only if not a duplicate
+        if (!duplicate) {
+            tour[insertPosition] = minCostIndex;
+            visited[minCostIndex] = true;
+            tourSize++;
+        }
     }
 
     free(visited);

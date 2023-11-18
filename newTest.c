@@ -32,7 +32,6 @@ double **generateDistanceMatrix(double **coords, int numOfCoords) {
     for (int i = 0; i < numOfCoords; i++) {
         matrix[i] = (double *)malloc(numOfCoords * sizeof(double));
     }
-
     #pragma omp parallel for
     for (int i = 0; i < numOfCoords; i++) {
         matrix[i][i] = 0; // Distance from a point to itself is 0
@@ -41,38 +40,36 @@ double **generateDistanceMatrix(double **coords, int numOfCoords) {
             matrix[j][i] = matrix[i][j]; // Use symmetry, avoid redundant calculation
         }
     }
-
     return matrix;
 }
 
-// Function to find the nearest neighbor
-void findNearestNeighbor(double **distanceMatrix, int numOfCoords, int currentNode, int *nearestIndex, double *nearestDistance) {
-    double localNearestDistance = DBL_MAX;
-    int localNearestIndex = -1;
+void findFarthestNeighbor(double **distanceMatrix, int numOfCoords, int currentNode, int *farthestIndex, double *farthestDistance) {
+    double localFarthestDistance = -DBL_MAX;
+    int localFarthestIndex = -1;
 
-    #pragma omp parallel for reduction(min : localNearestDistance)
+    #pragma omp parallel for reduction(max : localFarthestDistance)
     for (int i = 0; i < numOfCoords; i++) {
         if (i != currentNode) {
             double dist = distanceMatrix[currentNode][i];
-            if (dist < localNearestDistance) {
-                localNearestDistance = dist;
+            if (dist > localFarthestDistance) {
+                localFarthestDistance = dist;
             }
         }
     }
 
-    // Find the index associated with the found minimum distance
+    // Find the index associated with the found maximum distance
     for (int i = 0; i < numOfCoords; i++) {
-        if (i != currentNode && distanceMatrix[currentNode][i] == localNearestDistance) {
-            localNearestIndex = i;
+        if (i != currentNode && distanceMatrix[currentNode][i] == localFarthestDistance) {
+            localFarthestIndex = i;
             break;
         }
     }
 
-    *nearestDistance = localNearestDistance;
-    *nearestIndex = localNearestIndex;
+    *farthestDistance = localFarthestDistance;
+    *farthestIndex = localFarthestIndex;
 }
 
-int *cheapestInsertion(double **distanceMatrix, int numOfCoords) {
+int *farthestInsertion(double **distanceMatrix, int numOfCoords) {
     int *tour = malloc((numOfCoords + 1) * sizeof(int));
     int *unvisited = malloc(numOfCoords * sizeof(int));
     int unvisitedCount = numOfCoords - 1;
@@ -86,33 +83,32 @@ int *cheapestInsertion(double **distanceMatrix, int numOfCoords) {
     tour[0] = 0;
     int tourSize = 1;
 
-    // Step 2: Find the nearest neighbor to 0
-    double nearestDistance;
-    int nearestIndex;
-    findNearestNeighbor(distanceMatrix, numOfCoords, 0, &nearestIndex, &nearestDistance);
+    // Step 2: Find the farthest neighbor to 0
+    double farthestDistance;
+    int farthestIndex;
+    findFarthestNeighbor(distanceMatrix, numOfCoords, 0, &farthestIndex, &farthestDistance);
 
-    tour[1] = nearestIndex;
+    tour[1] = farthestIndex;
     tour[2] = 0; // Close the loop
     tourSize = 3;
 
     while (tourSize < numOfCoords + 1) {
-        double globalMinCost = DBL_MAX;
-        int globalMinCostIndex = -1, globalInsertPosition = -1;
-
+        double globalMaxCost = -DBL_MAX;
+        int globalMaxCostIndex = -1, globalInsertPosition = -1;
         #pragma omp parallel
         {
             int threadID = omp_get_thread_num();
-            double localMinCost = DBL_MAX;
-            int localMinCostIndex = -1, localInsertPosition = -1;
+            double localMaxCost = -DBL_MAX;
+            int localMaxCostIndex = -1, localInsertPosition = -1;
 
             #pragma omp for nowait
             for (int idx = 0; idx < unvisitedCount; idx++) {
                 int i = unvisited[idx];
                 for (int j = 0; j < tourSize - 1; j++) {
                     double cost = distanceMatrix[tour[j]][i] + distanceMatrix[i][tour[j + 1]] - distanceMatrix[tour[j]][tour[j + 1]];
-                    if (cost < localMinCost) {
-                        localMinCost = cost;
-                        localMinCostIndex = i;
+                    if (cost > localMaxCost) {
+                        localMaxCost = cost;
+                        localMaxCostIndex = i;
                         localInsertPosition = j + 1;
                     }
                 }
@@ -120,27 +116,27 @@ int *cheapestInsertion(double **distanceMatrix, int numOfCoords) {
 
             #pragma omp critical
             {
-                if (localMinCost < globalMinCost) {
-                    globalMinCost = localMinCost;
-                    globalMinCostIndex = localMinCostIndex;
+                if (localMaxCost > globalMaxCost) {
+                    globalMaxCost = localMaxCost;
+                    globalMaxCostIndex = localMaxCostIndex;
                     globalInsertPosition = localInsertPosition;
                 }
             }
         }
 
         // Update the tour outside the parallel region
-        if (globalMinCostIndex != -1) {
+        if (globalMaxCostIndex != -1) {
             // Shift elements to the right to make space for the new node
             for (int i = tourSize; i > globalInsertPosition; i--) {
                 tour[i] = tour[i - 1];
             }
             // Insert the new node
-            tour[globalInsertPosition] = globalMinCostIndex;
+            tour[globalInsertPosition] = globalMaxCostIndex;
             tourSize++;
 
             // Remove the visited node from the unvisited array
             for (int i = 0; i < unvisitedCount; i++) {
-                if (unvisited[i] == globalMinCostIndex) {
+                if (unvisited[i] == globalMaxCostIndex) {
                     unvisited[i] = unvisited[unvisitedCount - 1]; // Swap with the last element
                     unvisitedCount--;                               // Reduce the count of unvisited nodes
                     break;
@@ -166,20 +162,32 @@ int main(int argc, char *argv[]) {
     // Read coordinates
     int numOfCoords = readNumOfCoords(inputFile);
     double **coords = readCoords(inputFile, numOfCoords);
-
+    clock_t start_time = clock();
     // Generate distance matrix
     double **distanceMatrix = generateDistanceMatrix(coords, numOfCoords);
 
-    // Apply the cheapest insertion algorithm
-    int *tour = cheapestInsertion(distanceMatrix, numOfCoords);
+    // Apply the farthest insertion algorithm
+    int *tour = farthestInsertion(distanceMatrix, numOfCoords);
 
     // Write the tour to the output file
     writeTourToFile(tour, numOfCoords + 1, outputFile);
+    clock_t end_time = clock();
+    double elapsed_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
 
+    FILE *file = fopen("timelapsed", "w"); // Open the file once outside the loop
+    if (file == NULL) {
+        perror("Error opening file");
+        return EXIT_FAILURE;
+    }
+
+    fprintf(file, "Elapsed time: %f seconds\n", elapsed_time); // Example of writing to the file
+
+    fclose(file); // Close the file
     // Free memory
     for (int i = 0; i < numOfCoords; i++) {
         free(distanceMatrix[i]);
     }
+
     free(distanceMatrix);
     free(tour);
 
